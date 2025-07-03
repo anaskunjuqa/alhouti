@@ -1,6 +1,6 @@
 import { test } from "../basePage/fixtures/baseTest";
 import { HomePage } from "../pageObjects/HomePage/homePage";
-import { allure } from "allure-playwright";
+import * as allure from "allure-js-commons";
 
 test("e2e test", async ({ commonPage }) => {
   await allure.description("End-to-end test for Alhouti website navigation");
