@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  playwright-tests:
+    build: .
+    container_name: alhouti-playwright-tests
+    volumes:
+      # Mount source code for development
+      - .:/app
+      # Mount reports directory to persist results
+      - ./allure-results:/app/allure-results
+      - ./allure-report:/app/allure-report
+      - ./playwright-report:/app/playwright-report
+      - ./test-results:/app/test-results
+    environment:
+      - CI=true
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    command: npm run test
+    
+  # Service for running tests with Allure report generation
+  playwright-allure:
+    build: .
+    container_name: alhouti-playwright-allure
+    volumes:
+      - .:/app
+      - ./allure-results:/app/allure-results
+      - ./allure-report:/app/allure-report
+      - ./playwright-report:/app/playwright-report
+      - ./test-results:/app/test-results
+    environment:
+      - CI=true
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    command: sh -c "npm run test && npm run allure:generate"
+    
+  # Service for serving Allure reports
+  allure-server:
+    build: .
+    container_name: alhouti-allure-server
+    ports:
+      - "4040:4040"
+    volumes:
+      - ./allure-results:/app/allure-results
+    environment:
+      - CI=true
+    command: npx allure serve allure-results --port 4040 --host 0.0.0.0

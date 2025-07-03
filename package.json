@@ -14,7 +14,12 @@
     "allure:generate": "npx allure generate allure-results --clean -o allure-report",
     "allure:serve": "npx allure serve allure-results",
     "allure:open": "npx allure open allure-report",
-    "test:allure": "npm run test && npm run allure:generate && npm run allure:open"
+    "test:allure": "npm run test && npm run allure:generate && npm run allure:open",
+    "docker:build": "docker build -t alhouti-playwright .",
+    "docker:test": "docker-compose run --rm playwright-tests",
+    "docker:test-allure": "docker-compose run --rm playwright-allure",
+    "docker:allure-serve": "docker-compose up allure-server",
+    "docker:clean": "docker-compose down && docker rmi alhouti-playwright"
   },
   "keywords": [],
   "author": "",
