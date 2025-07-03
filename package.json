@@ -19,7 +19,9 @@
     "docker:test": "docker-compose run --rm playwright-tests",
     "docker:test-allure": "docker-compose run --rm playwright-allure",
     "docker:allure-serve": "docker-compose up allure-server",
-    "docker:clean": "docker-compose down && docker rmi alhouti-playwright"
+    "docker:clean": "docker-compose down && docker rmi alhouti-playwright",
+    "docker:setup": "node -e \"process.platform === 'win32' ? require('child_process').spawn('powershell', ['./scripts/docker-setup.ps1', '-Action', process.argv[1] || 'help'], {stdio: 'inherit'}) : require('child_process').spawn('./scripts/docker-setup.sh', [process.argv[1] || 'help'], {stdio: 'inherit'})\"",
+    "docker:full": "npm run docker:setup full"
   },
   "keywords": [],
   "author": "",
