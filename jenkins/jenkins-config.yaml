@@ -1,0 +1,220 @@
+# Jenkins Configuration as Code (JCasC) for Alhouti Playwright Pipeline
+# This file can be used with the Configuration as Code plugin
+
+jenkins:
+  systemMessage: "Alhouti Playwright Automation Jenkins Server"
+  numExecutors: 2
+  mode: NORMAL
+  
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "admin"
+          password: "${JENKINS_ADMIN_PASSWORD}"
+          
+  authorizationStrategy:
+    globalMatrix:
+      permissions:
+        - "Overall/Administer:admin"
+        - "Overall/Read:authenticated"
+        - "Job/Build:authenticated"
+        - "Job/Read:authenticated"
+
+  globalNodeProperties:
+    - envVars:
+        env:
+          - key: "PLAYWRIGHT_BROWSERS_PATH"
+            value: "/opt/ms-playwright"
+          - key: "NODE_ENV"
+            value: "test"
+
+  clouds:
+    - docker:
+        name: "docker-cloud"
+        dockerApi:
+          dockerHost:
+            uri: "unix:///var/run/docker.sock"
+        templates:
+          - labelString: "playwright-agent"
+            dockerTemplateBase:
+              image: "mcr.microsoft.com/playwright:v1.40.0-focal"
+              pullCredentialsId: ""
+              network: "bridge"
+            remoteFs: "/home/jenkins"
+            connector:
+              attach:
+                user: "jenkins"
+            instanceCapStr: "2"
+            retentionStrategy:
+              idleMinutes: 5
+
+tool:
+  nodejs:
+    installations:
+      - name: "Node18"
+        properties:
+          - installSource:
+              installers:
+                - nodeJSInstaller:
+                    id: "18.19.0"
+                    npmPackagesRefreshHours: 72
+
+  git:
+    installations:
+      - name: "Default"
+        home: "/usr/bin/git"
+
+jobs:
+  - script: |
+      multibranchPipelineJob('alhouti-playwright-tests') {
+          displayName('Alhouti Playwright Tests')
+          description('Automated testing pipeline for Alhouti website using Playwright')
+          
+          branchSources {
+              git {
+                  id('alhouti-repo')
+                  remote('https://github.com/anaskunjuqa/alhouti.git')
+                  credentialsId('github-credentials')
+              }
+          }
+          
+          configure { node ->
+              def traits = node / 'sources' / 'data' / 'jenkins.branch.BranchSource' / 'source' / 'traits'
+              traits << 'jenkins.plugins.git.traits.BranchDiscoveryTrait' {
+                  strategyId(1)
+              }
+              traits << 'jenkins.plugins.git.traits.OriginPullRequestDiscoveryTrait' {
+                  strategyId(1)
+              }
+          }
+          
+          factory {
+              workflowBranchProjectFactory {
+                  scriptPath('Jenkinsfile')
+              }
+          }
+          
+          triggers {
+              periodicFolderTrigger {
+                  interval('5m')
+              }
+          }
+          
+          orphanedItemStrategy {
+              discardOldItems {
+                  daysToKeep(7)
+                  numToKeep(10)
+              }
+          }
+      }
+
+  - script: |
+      pipelineJob('alhouti-nightly-tests') {
+          displayName('Alhouti Nightly Regression Tests')
+          description('Nightly regression test suite for Alhouti website')
+          
+          definition {
+              cpsScm {
+                  scm {
+                      git {
+                          remote {
+                              url('https://github.com/anaskunjuqa/alhouti.git')
+                              credentials('github-credentials')
+                          }
+                          branch('*/main')
+                      }
+                  }
+                  scriptPath('jenkins/Jenkinsfile.multibranch')
+              }
+          }
+          
+          triggers {
+              cron('H 2 * * *') // Run at 2 AM daily
+          }
+          
+          parameters {
+              choiceParam('ENVIRONMENT', ['staging', 'production'], 'Environment to test')
+              choiceParam('BROWSER', ['all', 'chromium', 'firefox'], 'Browser selection')
+              booleanParam('GENERATE_REPORT', true, 'Generate Allure report')
+          }
+          
+          logRotator {
+              daysToKeep(30)
+              numToKeep(50)
+          }
+      }
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - usernamePassword:
+              scope: GLOBAL
+              id: "github-credentials"
+              username: "${GITHUB_USERNAME}"
+              password: "${GITHUB_TOKEN}"
+              description: "GitHub credentials for repository access"
+          
+          - string:
+              scope: GLOBAL
+              id: "slack-token"
+              secret: "${SLACK_BOT_TOKEN}"
+              description: "Slack bot token for notifications"
+
+unclassified:
+  location:
+    url: "${JENKINS_URL}"
+    adminAddress: "admin@yourcompany.com"
+    
+  email-ext:
+    defaultSubject: "Jenkins Build: $PROJECT_NAME - $BUILD_STATUS"
+    defaultBody: |
+      Build: $BUILD_NUMBER
+      Status: $BUILD_STATUS
+      Project: $PROJECT_NAME
+      Date: $BUILD_TIMESTAMP
+      
+      Changes:
+      $CHANGES
+      
+      Console Output:
+      $BUILD_URL/console
+    
+    smtpServer: "smtp.gmail.com"
+    smtpPort: 587
+    useSsl: true
+    charset: "UTF-8"
+    
+  allure:
+    commandline:
+      installations:
+        - name: "Allure"
+          home: "/opt/allure"
+          
+  slackNotifier:
+    teamDomain: "yourcompany"
+    token: "${SLACK_BOT_TOKEN}"
+    room: "#qa-automation"
+    
+  timestamper:
+    allPipelines: true
+    
+  buildTimeout:
+    operations:
+      - timeoutWrapper:
+          strategy:
+            absoluteTimeOutStrategy:
+              timeoutMinutes: 60
+          operationList:
+            - failBuild()
+
+security:
+  globalJobDslSecurityConfiguration:
+    useScriptSecurity: false
+    
+  scriptApproval:
+    approvedSignatures:
+      - "method groovy.json.JsonSlurper parseText java.lang.String"
+      - "new groovy.json.JsonSlurper"
+      - "staticMethod org.codehaus.groovy.runtime.DefaultGroovyMethods readLines java.io.File"

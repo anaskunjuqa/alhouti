@@ -1,0 +1,386 @@
+pipeline {
+    agent any
+    
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'staging', 'production'],
+            description: 'Select environment to run tests against'
+        )
+        choice(
+            name: 'BROWSER',
+            choices: ['all', 'chromium', 'firefox', 'webkit'],
+            description: 'Select browser for test execution'
+        )
+        booleanParam(
+            name: 'HEADLESS',
+            defaultValue: true,
+            description: 'Run tests in headless mode'
+        )
+        booleanParam(
+            name: 'GENERATE_REPORT',
+            defaultValue: true,
+            description: 'Generate Allure report after tests'
+        )
+    }
+    
+    environment {
+        NODE_VERSION = '18'
+        PLAYWRIGHT_BROWSERS_PATH = '/opt/ms-playwright'
+        TEST_ENV = "${params.ENVIRONMENT}"
+        BROWSER_TYPE = "${params.BROWSER}"
+        HEADLESS_MODE = "${params.HEADLESS}"
+    }
+    
+    tools {
+        nodejs "${NODE_VERSION}"
+    }
+    
+    stages {
+        stage('Environment Setup') {
+            steps {
+                echo "Setting up environment for: ${params.ENVIRONMENT}"
+                echo "Browser selection: ${params.BROWSER}"
+                echo "Headless mode: ${params.HEADLESS}"
+                
+                script {
+                    // Set environment-specific variables
+                    switch(params.ENVIRONMENT) {
+                        case 'dev':
+                            env.BASE_URL = 'https://dev.alhouti.com'
+                            break
+                        case 'staging':
+                            env.BASE_URL = 'https://staging.alhouti.com'
+                            break
+                        case 'production':
+                            env.BASE_URL = 'https://alhouti.com'
+                            break
+                        default:
+                            env.BASE_URL = 'https://alhouti.com'
+                    }
+                    echo "Base URL set to: ${env.BASE_URL}"
+                }
+            }
+        }
+        
+        stage('Checkout') {
+            steps {
+                echo 'Checking out code from repository...'
+                checkout scm
+                
+                script {
+                    // Get commit information
+                    env.GIT_COMMIT_MSG = sh(
+                        script: 'git log -1 --pretty=%B',
+                        returnStdout: true
+                    ).trim()
+                    env.GIT_AUTHOR = sh(
+                        script: 'git log -1 --pretty=%an',
+                        returnStdout: true
+                    ).trim()
+                }
+            }
+        }
+        
+        stage('Install Dependencies') {
+            steps {
+                echo 'Installing Node.js dependencies...'
+                sh 'npm ci'
+                
+                // Verify installation
+                sh 'npm list --depth=0'
+            }
+        }
+        
+        stage('Install Playwright Browsers') {
+            steps {
+                echo 'Installing Playwright browsers...'
+                script {
+                    if (params.BROWSER == 'all') {
+                        sh 'npx playwright install --with-deps'
+                    } else {
+                        sh "npx playwright install ${params.BROWSER} --with-deps"
+                    }
+                }
+            }
+        }
+        
+        stage('Pre-Test Validation') {
+            steps {
+                echo 'Running pre-test validations...'
+                
+                // Verify Playwright installation
+                sh 'npx playwright --version'
+                
+                // Check if test files exist
+                sh 'ls -la tests/'
+                
+                // Validate configuration
+                sh 'node -e "console.log(require(\'./playwright.config.ts\'))"'
+            }
+        }
+        
+        stage('Run Tests') {
+            steps {
+                echo "Running Playwright tests on ${params.ENVIRONMENT} environment..."
+                
+                script {
+                    def testCommand = 'npx playwright test'
+                    
+                    // Add browser selection
+                    if (params.BROWSER != 'all') {
+                        testCommand += " --project=${params.BROWSER}"
+                    }
+                    
+                    // Add headless mode
+                    if (params.HEADLESS) {
+                        testCommand += ' --headed=false'
+                    } else {
+                        testCommand += ' --headed=true'
+                    }
+                    
+                    // Add environment-specific configuration
+                    testCommand += " --grep='${params.ENVIRONMENT}|smoke'"
+                    
+                    echo "Executing: ${testCommand}"
+                    
+                    // Run tests with timeout
+                    timeout(time: 30, unit: 'MINUTES') {
+                        sh testCommand
+                    }
+                }
+            }
+            post {
+                always {
+                    // Archive test results regardless of outcome
+                    archiveArtifacts artifacts: 'test-results/**/*', allowEmptyArchive: true
+                    archiveArtifacts artifacts: 'playwright-report/**/*', allowEmptyArchive: true
+                    
+                    // Archive screenshots and videos
+                    archiveArtifacts artifacts: 'test-results/**/screenshots/**/*', allowEmptyArchive: true
+                    archiveArtifacts artifacts: 'test-results/**/videos/**/*', allowEmptyArchive: true
+                }
+            }
+        }
+        
+        stage('Generate Reports') {
+            when {
+                expression { params.GENERATE_REPORT }
+            }
+            steps {
+                echo 'Generating test reports...'
+                
+                // Generate Allure report
+                sh 'npm run allure:generate'
+                
+                // Generate custom HTML report if needed
+                script {
+                    try {
+                        sh 'npm run report:html || echo "Custom HTML report not configured"'
+                    } catch (Exception e) {
+                        echo "Custom report generation failed: ${e.getMessage()}"
+                    }
+                }
+            }
+            post {
+                always {
+                    // Archive reports
+                    archiveArtifacts artifacts: 'allure-results/**/*', allowEmptyArchive: true
+                    archiveArtifacts artifacts: 'allure-report/**/*', allowEmptyArchive: true
+                }
+            }
+        }
+        
+        stage('Publish Results') {
+            when {
+                expression { params.GENERATE_REPORT }
+            }
+            steps {
+                echo 'Publishing test results...'
+                
+                script {
+                    // Publish Allure report
+                    allure([
+                        includeProperties: false,
+                        jdk: '',
+                        properties: [],
+                        reportBuildPolicy: 'ALWAYS',
+                        results: [[path: 'allure-results']]
+                    ])
+                    
+                    // Publish test results summary
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'playwright-report',
+                        reportFiles: 'index.html',
+                        reportName: 'Playwright Test Report'
+                    ])
+                }
+            }
+        }
+        
+        stage('Quality Gate') {
+            steps {
+                echo 'Evaluating quality gate...'
+                
+                script {
+                    // Read test results and evaluate
+                    def testResults = readJSON file: 'test-results/results.json'
+                    def passRate = (testResults.passed / testResults.total) * 100
+                    
+                    echo "Test pass rate: ${passRate}%"
+                    
+                    if (passRate < 90) {
+                        currentBuild.result = 'UNSTABLE'
+                        echo "⚠️ Quality gate warning: Pass rate below 90%"
+                    }
+                    
+                    if (passRate < 70) {
+                        error("❌ Quality gate failed: Pass rate below 70%")
+                    }
+                }
+            }
+        }
+        
+        stage('Deployment Trigger') {
+            when {
+                allOf {
+                    branch 'main'
+                    expression { params.ENVIRONMENT == 'staging' }
+                    expression { currentBuild.result != 'UNSTABLE' }
+                }
+            }
+            steps {
+                echo 'Triggering deployment pipeline...'
+                
+                script {
+                    // Trigger deployment job
+                    build job: 'alhouti-deployment', 
+                          parameters: [
+                              string(name: 'ENVIRONMENT', value: params.ENVIRONMENT),
+                              string(name: 'BUILD_NUMBER', value: env.BUILD_NUMBER)
+                          ],
+                          wait: false
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo 'Pipeline execution completed!'
+            
+            script {
+                // Calculate build duration
+                def duration = currentBuild.durationString.replace(' and counting', '')
+                echo "Build duration: ${duration}"
+                
+                // Clean up workspace
+                cleanWs(
+                    cleanWhenAborted: true,
+                    cleanWhenFailure: true,
+                    cleanWhenNotBuilt: true,
+                    cleanWhenSuccess: true,
+                    cleanWhenUnstable: true,
+                    deleteDirs: true
+                )
+            }
+        }
+        
+        success {
+            echo '✅ Pipeline succeeded!'
+            
+            script {
+                // Send success notification
+                def message = """
+                🎉 *Build Successful!*
+                
+                *Job:* ${env.JOB_NAME}
+                *Build:* #${env.BUILD_NUMBER}
+                *Environment:* ${params.ENVIRONMENT}
+                *Browser:* ${params.BROWSER}
+                *Duration:* ${currentBuild.durationString}
+                *Commit:* ${env.GIT_COMMIT_MSG}
+                *Author:* ${env.GIT_AUTHOR}
+                
+                📊 [View Allure Report](${env.BUILD_URL}allure)
+                📋 [View Build Details](${env.BUILD_URL})
+                """
+                
+                // Send to Slack if configured
+                try {
+                    slackSend(
+                        channel: '#qa-automation',
+                        color: 'good',
+                        message: message
+                    )
+                } catch (Exception e) {
+                    echo "Slack notification failed: ${e.getMessage()}"
+                }
+            }
+        }
+        
+        failure {
+            echo '❌ Pipeline failed!'
+            
+            script {
+                def message = """
+                🚨 *Build Failed!*
+                
+                *Job:* ${env.JOB_NAME}
+                *Build:* #${env.BUILD_NUMBER}
+                *Environment:* ${params.ENVIRONMENT}
+                *Browser:* ${params.BROWSER}
+                *Duration:* ${currentBuild.durationString}
+                *Commit:* ${env.GIT_COMMIT_MSG}
+                *Author:* ${env.GIT_AUTHOR}
+                
+                🔍 [View Console Output](${env.BUILD_URL}console)
+                📋 [View Build Details](${env.BUILD_URL})
+                """
+                
+                // Send failure notification
+                try {
+                    slackSend(
+                        channel: '#qa-automation',
+                        color: 'danger',
+                        message: message
+                    )
+                } catch (Exception e) {
+                    echo "Slack notification failed: ${e.getMessage()}"
+                }
+            }
+        }
+        
+        unstable {
+            echo '⚠️ Pipeline is unstable!'
+            
+            script {
+                def message = """
+                ⚠️ *Build Unstable!*
+                
+                *Job:* ${env.JOB_NAME}
+                *Build:* #${env.BUILD_NUMBER}
+                *Environment:* ${params.ENVIRONMENT}
+                *Browser:* ${params.BROWSER}
+                
+                Some tests may have failed. Please review the results.
+                
+                📊 [View Test Results](${env.BUILD_URL}allure)
+                """
+                
+                try {
+                    slackSend(
+                        channel: '#qa-automation',
+                        color: 'warning',
+                        message: message
+                    )
+                } catch (Exception e) {
+                    echo "Slack notification failed: ${e.getMessage()}"
+                }
+            }
+        }
+    }
+}
